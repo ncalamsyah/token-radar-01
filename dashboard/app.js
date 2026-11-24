@@ -1,4 +1,4 @@
-// Launch Radar bootloader (radar-2.5): state, filters, URL hash and the page shell.
+// Launch Radar bootloader (radar-3.0): state, filters, URL hash, the integrity strip and the page shell.
 // Needs window.RADAR (../data.js) and window.RadarView (radar-view.js), both loaded first. No network.
 (function () {
   'use strict';
@@ -8,7 +8,8 @@
   if (!DATA || !V) return;
   var el = V.el;
   var app = document.getElementById('board');
-  var state = { q: '', category: 'all', chain: 'all', tab: 'pre-token', sort: 'implied', dir: -1, selected: null };
+  var state = { q: '', category: 'all', chain: 'all', verdict: 'all', tab: 'pre-token', sort: 'implied', dir: -1, selected: null };
+  var VERDICT_RANK = { farm: 3, thin: 2, skip: 1 };
 
   function readHash() {
     var params = new URLSearchParams(window.location.hash.replace(/^#/, ''));
@@ -16,12 +17,14 @@
     if (params.get('p')) state.selected = params.get('p');
     if (params.get('category')) state.category = params.get('category');
     if (params.get('chain')) state.chain = params.get('chain');
+    if (params.get('verdict')) state.verdict = params.get('verdict');
   }
   function writeHash() {
     var params = new URLSearchParams();
     if (state.q) params.set('q', state.q);
     if (state.category !== 'all') params.set('category', state.category);
     if (state.chain !== 'all') params.set('chain', state.chain);
+    if (state.verdict !== 'all') params.set('verdict', state.verdict);
     if (state.selected) params.set('p', state.selected);
     var next = params.toString();
     window.history.replaceState(null, '', next ? '#' + next : window.location.pathname + window.location.search);
@@ -32,6 +35,7 @@
     return DATA.rows.filter(function (r) {
       if (state.category !== 'all' && (r.category || 'Other') !== state.category) return false;
       if (state.chain !== 'all' && (r.chains || []).indexOf(state.chain) < 0) return false;
+      if (state.verdict !== 'all' && r.farm_verdict !== state.verdict) return false;
       if (!q) return true;
       return [r.name, r.slug, r.category, (r.chains || []).join(' ')].join(' ').toLowerCase().indexOf(q) >= 0;
     });
@@ -43,6 +47,9 @@
       if (key === 'name') { av = a.name.toLowerCase(); bv = b.name.toLowerCase(); }
       else if (key === 'tvl') { av = a.tvl_usd; bv = b.tvl_usd; }
       else if (key === 'chains') { av = V.chainCount(a); bv = V.chainCount(b); }
+      else if (key === 'odds') { av = a.token_odds; bv = b.token_odds; }
+      else if (key === 'launch') { av = a.launch_value_usd; bv = b.launch_value_usd; }
+      else if (key === 'verdict') { av = VERDICT_RANK[a.farm_verdict]; bv = VERDICT_RANK[b.farm_verdict]; if (av === bv) { av = a.implied_value_usd; bv = b.implied_value_usd; } }
       else if (key === 'growth') { av = V.none(a.change_7d) ? -Infinity : a.change_7d; bv = V.none(b.change_7d) ? -Infinity : b.change_7d; }
       else if (key === 'age') { av = V.none(a.age_days) ? Infinity : a.age_days; bv = V.none(b.age_days) ? Infinity : b.age_days; }
       else { av = a.implied_value_usd; bv = b.implied_value_usd; }
@@ -58,27 +65,34 @@
       el('div', { class: 'top-meta' },
         el('span', { text: 'Snapshot ' + DATA.as_of }),
         el('span', { text: 'DefiLlama sealed index' }),
-        el('span', { text: DATA.model_version + ' · category comps + chain breadth + liquidity spread' })
+        el('span', { text: DATA.model_version + ' · size-fit × token odds → expected value' })
       )
     );
   }
 
+  // The integrity strip: proof, on the first screen, that the board is whole and how well the fit holds out.
+  function strip() {
+    var g = DATA.integrity;
+    var d = DATA.fit_diagnostics;
+    var t = DATA.farm_verdict_thresholds;
+    function cell(label, value, tone) {
+      return el('div', { class: 'cell' + (tone ? ' ' + tone : '') }, el('span', { text: label }), el('b', { text: value }));
+    }
+    return el('section', { class: 'integrity', 'aria-label': 'Integrity and model checks' },
+      cell('Watchlist', g.watchlist_covered + '/' + g.watchlist_size, g.watchlist_covered === g.watchlist_size ? 'good' : 'bad'),
+      cell('Board rows', String(g.board_size)),
+      cell(g.protocols_total + ' protocols accounted', g.pre_token_count + ' pre + ' + g.live_count + ' live + ' + g.other_count + ' other', g.pre_token_count + g.live_count + g.other_count === g.protocols_total ? 'good' : 'bad'),
+      cell('LOO Spearman', V.fmtNum(d.loo_spearman)),
+      cell('Walk-fwd Spearman', V.fmtNum(d.wf_spearman)),
+      cell('Farm ≥' + V.fmtUsd(t.farm_ev_min) + ' / Thin ≥' + V.fmtUsd(t.thin_ev_min) + ' / Skip', g.farm_farm + ' / ' + g.farm_thin + ' / ' + g.farm_skip),
+      cell('Model', DATA.model_version)
+    );
+  }
+
   function lede() {
-    var multi = DATA.rows.filter(V.isMultiChain).length;
-    var deep = DATA.rows.filter(function (r) { return r.farm_extra !== null && r.farm_extra !== undefined; }).length;
     return el('section', { class: 'lede' },
-      el('div', null,
-        el('h1', { text: 'Pre-token protocols, ranked by what a launch could be worth' }),
-        el('p', { text: 'Watchlist floor: every protocol with ≥ $' + Math.round(DATA.floor_usd / 1e6) + 'M TVL and no token on record (' + DATA.watchlist_size + '). Early radar adds ' + DATA.early_size + ' smaller pre-token names. Implied value uses live-token category mcap/TVL comps × growth × age without a token × chain breadth × a 5% concentration bonus for three or more chains × up to +8% for TVL still growing (liquidity spread). An estimate, not a price.' })
-      ),
-      el('div', { class: 'facts' },
-        el('div', { class: 'fact' }, el('span', { text: 'Watchlist covered' }), el('b', { text: DATA.watchlist_size + ' / ' + DATA.watchlist_size })),
-        el('div', { class: 'fact' }, el('span', { text: 'Pre-token rows' }), el('b', { text: String(DATA.board_size) })),
-        el('div', { class: 'fact' }, el('span', { text: 'Early below floor' }), el('b', { text: String(DATA.early_size) })),
-        el('div', { class: 'fact' }, el('span', { text: 'Multi-chain rows (' + V.MULTI_CHAIN_MIN + '+)' }), el('b', { text: String(multi) })),
-        el('div', { class: 'fact' }, el('span', { text: 'Lend/DEX 7-step plans' }), el('b', { text: String(deep) })),
-        el('div', { class: 'fact' }, el('span', { text: 'Live set aside' }), el('b', { text: String(DATA.live_size) }))
-      )
+      el('h1', { text: 'Pre-token protocols ranked by expected launch value' }),
+      el('p', { text: 'Every protocol with ≥ $' + Math.round(DATA.floor_usd / 1e6) + 'M TVL and no token on record (' + DATA.watchlist_size + '), plus ' + DATA.early_size + ' smaller pre-token names. EV = TVL × a size-fitted category multiple × growth × age × chains × the odds a token ever lists (they fall with age). An estimate, not a price.' })
     );
   }
 
@@ -105,6 +119,7 @@
       el('div', { class: 'field' }, el('label', { for: 'q', text: 'Search' }), search),
       selectField('category', 'Category', 'All categories', categories, state.category, function (v) { state.category = v; }),
       selectField('chain', 'Chain', 'All chains', chains, state.chain, function (v) { state.chain = v; }),
+      selectField('verdict', 'Verdict', 'All verdicts', ['farm', 'thin', 'skip'], state.verdict, function (v) { state.verdict = v; }),
       el('div', { class: 'field' }, el('span', { class: 'sub', text: 'Token status' }), el('div', { class: 'tabs' }, pre, live)),
       el('span', { class: 'count', text: state.tab === 'pre-token' ? rows().length + ' rows shown' : DATA.live.length + ' live-token protocols' })
     );
@@ -132,7 +147,7 @@
     get selected() { return state.selected; },
     onSort: function (key) { if (state.sort === key) state.dir = -state.dir; else { state.sort = key; state.dir = -1; } render(); },
     onOpen: openDetail,
-    onClear: function () { state.q = ''; state.category = 'all'; state.chain = 'all'; writeHash(); render(); }
+    onClear: function () { state.q = ''; state.category = 'all'; state.chain = 'all'; state.verdict = 'all'; writeHash(); render(); }
   };
 
   function render() {
@@ -140,9 +155,10 @@
     var shell = el('div', { class: 'shell' });
     shell.appendChild(header());
     shell.appendChild(lede());
+    shell.appendChild(strip());
     shell.appendChild(controls());
     shell.appendChild(state.tab === 'pre-token' ? V.boardTable(sortedRows(rows()), tableCtx) : V.liveTable(DATA.live));
-    if (state.tab === 'pre-token') shell.appendChild(V.modelPanel(DATA.model));
+    if (state.tab === 'pre-token') shell.appendChild(V.modelPanel(DATA));
     app.appendChild(shell);
     app.setAttribute('aria-busy', 'false');
     if (!dialog.isConnected) app.appendChild(dialog);

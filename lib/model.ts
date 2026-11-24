@@ -1,18 +1,18 @@
-// Token radar model radar-2.5, the orchestrator: parse the snapshot, pick the rows, score them with
+// Token radar model radar-3.0, the orchestrator: parse the snapshot, pick the rows, score them with
 // lib/scoring.ts, attach the farm plans (lib/farm.ts) and rationales (lib/explain.ts), and check the board against the gate.
 // The arithmetic lives in scoring.ts and the farm tables in farm.ts; nothing in this file multiplies or
 // words a step. Live-token protocols are never mixed into the ranked board (see scoring.ts).
 
 import { rationale } from './explain.ts';
 import { farmPlan, STEP_MAX_CHARS, STEP_MIN_CHARS, stepText } from './farm.ts';
-import type { FarmKind } from './farm.ts';
-import { MODEL, MODEL_VERSION, categoryMultiples, impliedValue, isPreToken, round4 } from './scoring.ts';
-import type { ModelConstants, SnapshotProtocol } from './scoring.ts';
+import type { FarmKind, FarmVerdict } from './farm.ts';
+import { MODEL, MODEL_VERSION, categoryFits, fitDiagnostics, impliedValue, isPreToken, round4 } from './scoring.ts';
+import type { CategoryFit, FitDiagnostics, ModelConstants, SnapshotProtocol } from './scoring.ts';
 
 export { MODEL, MODEL_VERSION };
-export type { ModelConstants, SnapshotProtocol };
+export type { CategoryFit, FitDiagnostics, ModelConstants, SnapshotProtocol };
 
-export const EARLY_ROWS = 180;
+export const EARLY_ROWS = 220;
 export const LIVE_ROWS = 40;
 
 export interface Snapshot {
@@ -37,22 +37,32 @@ export interface BoardRow {
   symbol: string | null;
   token_status: 'pre-token';
   age_days: number | null;
+  /** Expected value: launch_value_usd x token_odds. The board ranks by it. */
   implied_value_usd: number;
+  launch_value_usd: number;
+  token_odds: number;
+  /** TVL x every multiplier x odds -> value, as one line. */
+  equation: string;
   model: {
     base_multiple: number;
     category_multiple: number;
+    fit_kind: 'fit' | 'median' | 'fallback';
+    fit_peers: number;
     growth_pct: number;
     growth_multiplier: number;
     maturity_multiplier: number;
     chain_multiplier: number;
     concentration_multiplier: number;
     liquidity_spread_multiplier: number;
+    token_odds: number;
     age_days: number | null;
   };
   farm_steps: string[];
   /** Index in farm_steps of the lend/dex-only step, or null. */
   farm_extra: number | null;
   farm_kind: FarmKind | null;
+  farm_verdict: FarmVerdict;
+  farm_capital_usd: number;
   /** Plain-English account of the multipliers (lib/explain.ts). */
   rationale: string;
 }
@@ -70,15 +80,22 @@ export interface RadarRow {
   listed_at: string | null;
   age_days: number | null;
   implied_value_usd: number;
+  launch_value_usd: number;
+  token_odds: number;
+  equation: string;
   growth_multiplier: number;
   maturity_multiplier: number;
   category_multiple: number;
+  fit_kind: 'fit' | 'median' | 'fallback';
+  fit_peers: number;
   chain_multiplier: number;
   concentration_multiplier: number;
   liquidity_spread_multiplier: number;
   farm_steps: string[];
   farm_extra: number | null;
   farm_kind: FarmKind | null;
+  farm_verdict: FarmVerdict;
+  farm_capital_usd: number;
   rationale: string;
 }
 
@@ -92,6 +109,27 @@ export interface LiveRow {
   change_7d: number | null;
 }
 
+/** Where every one of the snapshot's protocols went, and the board's verdict mix. */
+export interface Integrity {
+  protocols_total: number;
+  pre_token_count: number;
+  live_count: number;
+  /** Neither a clean pre-token nor a live token (CEX rows with no token). */
+  other_count: number;
+  watchlist_size: number;
+  watchlist_covered: number;
+  board_size: number;
+  farm_farm: number;
+  farm_thin: number;
+  farm_skip: number;
+}
+
+/** The expected-value bands (USD) behind the farm / thin / skip verdicts. */
+export interface FarmVerdictThresholds {
+  farm_ev_min: number;
+  thin_ev_min: number;
+}
+
 export interface RadarData {
   as_of: string;
   source: string;
@@ -102,7 +140,10 @@ export interface RadarData {
   board_size: number;
   early_size: number;
   live_size: number;
-  category_multiples: Record<string, number>;
+  category_fits: Record<string, CategoryFit>;
+  fit_diagnostics: FitDiagnostics;
+  farm_verdict_thresholds: FarmVerdictThresholds;
+  integrity: Integrity;
   rows: RadarRow[];
   live: LiveRow[];
 }
@@ -122,9 +163,9 @@ export function isRankable(p: SnapshotProtocol): boolean {
   return isPreToken(p) && p.category !== 'CEX' && !VERSIONED.test(p.name);
 }
 
-export function buildBoard(snapshot: Snapshot, model: ModelConstants = MODEL): BoardRow[] {
+export function buildBoard(snapshot: Snapshot, model: ModelConstants = MODEL, fits?: Record<string, CategoryFit>): BoardRow[] {
   const index = new Map(snapshot.protocols.map((p) => [p.slug, p]));
-  const multiples = categoryMultiples(snapshot.protocols, model);
+  const catFits = fits ?? categoryFits(snapshot.protocols, model);
   const chosen = new Map<string, SnapshotProtocol>();
   for (const slug of snapshot.watchlist) {
     const p = index.get(slug);
@@ -136,10 +177,10 @@ export function buildBoard(snapshot: Snapshot, model: ModelConstants = MODEL): B
     .slice(0, EARLY_ROWS);
   for (const p of early) chosen.set(p.slug, p);
 
-  const scored = [...chosen.values()].map((p) => ({ p, ...impliedValue(p, snapshot.as_of, model, multiples) }));
+  const scored = [...chosen.values()].map((p) => ({ p, ...impliedValue(p, snapshot.as_of, model, catFits) }));
   scored.sort((a, b) => b.implied - a.implied || cmp(a.p.slug, b.p.slug));
   return scored.map((s, i) => {
-    const plan = farmPlan(s.p, s.age);
+    const plan = farmPlan(s.p, s.age, s.implied, model);
     const row = {
       rank: i + 1,
       slug: s.p.slug,
@@ -155,20 +196,28 @@ export function buildBoard(snapshot: Snapshot, model: ModelConstants = MODEL): B
       token_status: 'pre-token' as const,
       age_days: s.age,
       implied_value_usd: s.implied,
+      launch_value_usd: s.launch,
+      token_odds: round4(s.tokenOdds),
+      equation: s.equation,
       model: {
         base_multiple: model.fallback_multiple,
         category_multiple: round4(s.categoryMult),
+        fit_kind: s.fitKind,
+        fit_peers: s.fitPeers,
         growth_pct: s.growthPct,
         growth_multiplier: round4(s.growthMult),
         maturity_multiplier: round4(s.maturityMult),
         chain_multiplier: round4(s.chainMult),
         concentration_multiplier: round4(s.concentrationMult),
         liquidity_spread_multiplier: round4(s.liquiditySpreadMult),
+        token_odds: round4(s.tokenOdds),
         age_days: s.age,
       },
       farm_steps: plan.steps.map(stepText),
       farm_extra: plan.extra,
       farm_kind: plan.kind,
+      farm_verdict: plan.verdict,
+      farm_capital_usd: plan.capital,
     };
     return { ...row, rationale: rationale(row) };
   });
@@ -203,21 +252,50 @@ export function radarRow(row: BoardRow): RadarRow {
     listed_at: row.listed_at,
     age_days: row.age_days,
     implied_value_usd: row.implied_value_usd,
+    launch_value_usd: row.launch_value_usd,
+    token_odds: row.token_odds,
+    equation: row.equation,
     growth_multiplier: row.model.growth_multiplier,
     maturity_multiplier: row.model.maturity_multiplier,
     category_multiple: row.model.category_multiple,
+    fit_kind: row.model.fit_kind,
+    fit_peers: row.model.fit_peers,
     chain_multiplier: row.model.chain_multiplier,
     concentration_multiplier: row.model.concentration_multiplier,
     liquidity_spread_multiplier: row.model.liquidity_spread_multiplier,
     farm_steps: row.farm_steps,
     farm_extra: row.farm_extra,
     farm_kind: row.farm_kind,
+    farm_verdict: row.farm_verdict,
+    farm_capital_usd: row.farm_capital_usd,
     rationale: row.rationale,
   };
 }
 
+/** Counts that prove every protocol is accounted for and the watchlist is whole. */
+export function integrityOf(snapshot: Snapshot, board: BoardRow[]): Integrity {
+  const total = snapshot.protocols.length;
+  const live = snapshot.protocols.filter((p) => !isPreToken(p)).length;
+  const pre = snapshot.protocols.filter((p) => isPreToken(p) && p.category !== 'CEX').length;
+  const slugs = new Set(board.map((r) => r.slug));
+  const count = (v: FarmVerdict): number => board.filter((r) => r.farm_verdict === v).length;
+  return {
+    protocols_total: total,
+    pre_token_count: pre,
+    live_count: live,
+    other_count: total - pre - live,
+    watchlist_size: snapshot.watchlist.length,
+    watchlist_covered: snapshot.watchlist.filter((s) => slugs.has(s)).length,
+    board_size: board.length,
+    farm_farm: count('farm'),
+    farm_thin: count('thin'),
+    farm_skip: count('skip'),
+  };
+}
+
 export function buildRadar(snapshot: Snapshot, model: ModelConstants = MODEL): { board: BoardRow[]; radar: RadarData } {
-  const board = buildBoard(snapshot, model);
+  const fits = categoryFits(snapshot.protocols, model);
+  const board = buildBoard(snapshot, model, fits);
   const live = liveRows(snapshot);
   const watch = new Set(snapshot.watchlist);
   const radar: RadarData = {
@@ -230,7 +308,10 @@ export function buildRadar(snapshot: Snapshot, model: ModelConstants = MODEL): {
     board_size: board.length,
     early_size: board.filter((r) => !watch.has(r.slug)).length,
     live_size: live.length,
-    category_multiples: categoryMultiples(snapshot.protocols, model),
+    category_fits: fits,
+    fit_diagnostics: fitDiagnostics(snapshot.protocols, model),
+    farm_verdict_thresholds: { farm_ev_min: model.farm_ev_min, thin_ev_min: model.thin_ev_min },
+    integrity: integrityOf(snapshot, board),
     rows: board.map(radarRow),
     live,
   };
@@ -283,13 +364,14 @@ export function parseSnapshot(text: string): Snapshot {
   };
 }
 
-/** The gate's board checks (watchlist covered, ranks 1..N, value never rising, 3 to 12 steps of 20 to 600 characters). */
+/** The gate's board checks (watchlist covered, ranks 1..N, value never rising, 3 to 12 steps of 20 to 600 characters, 100+ rows). */
 export function boardIssue(board: BoardRow[], snapshot: Snapshot): string | null {
   const slugs = new Set(board.map((r) => r.slug));
   const missing = snapshot.watchlist.filter((s) => !slugs.has(s));
   if (missing.length > 0) {
     return `the board misses ${missing.length} watchlist slug${missing.length === 1 ? '' : 's'}: ${missing.slice(0, 5).join(', ')}`;
   }
+  if (board.length < 100) return `the board has ${board.length} rows, the gate needs at least 100`;
   const ranks = board.map((r) => r.rank).sort((a, b) => a - b);
   for (let i = 0; i < ranks.length; i++) if (ranks[i] !== i + 1) return `rank ${i + 1} is ${ranks[i]}`;
   for (let i = 1; i < board.length; i++) {

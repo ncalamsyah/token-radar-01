@@ -1,14 +1,18 @@
-// Launch Radar farm plans (radar-2.4): the capital, hold and action tables, and the steps built from them.
+// Launch Radar farm plans (radar-3.0): the capital, hold and action tables, the steps built from them, and a verdict.
 //
-// Every protocol gets 6 steps. A protocol whose category starts a word with "lend" or "dex" (Lending,
-// Uncollateralized Lending, Dexs, RWA Lending...) gets a 7th, category-specific upkeep step inserted
-// just before the closing notebook step, so a plan is 6 steps, or 7 for lend/dex: inside the gate's 3 to 12.
+// Every protocol gets 6 working steps plus one closing verdict step: 7. A protocol whose category starts a
+// word with "lend" or "dex" (Lending, Uncollateralized Lending, Dexs, RWA Lending...) gets a category-specific
+// upkeep step inserted just before the notebook step: 8. Both are inside the gate's 3 to 12.
 // The word-start match keeps "Indexes" from counting as a DEX.
 //
+// verdict is an absolute expected-value band (implied_value_usd, after token odds), set on MODEL:
+//   EV >= farm_ev_min ($5M) -> 'farm'; EV >= thin_ev_min ($1M) -> 'thin'; else 'skip'.
+//
 // The dashboard no longer carries its own copy of these tables: data.js ships each row's finished steps
-// (farm_steps) and which one, if any, is the category-specific extra (farm_extra).
+// (farm_steps), which one is the category-specific extra (farm_extra) and the verdict.
 
-import type { SnapshotProtocol } from './scoring.ts';
+import { MODEL, fmtMoney } from './scoring.ts';
+import type { ModelConstants, SnapshotProtocol } from './scoring.ts';
 
 export interface FarmStep {
   text: string;
@@ -17,12 +21,16 @@ export interface FarmStep {
 }
 
 export type FarmKind = 'lend' | 'dex';
+export type FarmVerdict = 'farm' | 'thin' | 'skip';
 
 export interface FarmPlan {
   steps: FarmStep[];
   /** Index in `steps` of the lend/dex-only step, or null when the plan has none. */
   extra: number | null;
   kind: FarmKind | null;
+  verdict: FarmVerdict;
+  /** USD deployed in the plan. */
+  capital: number;
 }
 
 /** The gate's bounds for one farm step string. */
@@ -47,6 +55,13 @@ export function capitalFor(p: SnapshotProtocol): number {
   if (p.tvl_usd >= 250_000_000) return 125;
   if (p.tvl_usd >= 50_000_000) return 75;
   return 50;
+}
+
+/** Farm, thin or skip: expected value in dollars against the model's two bands. */
+export function verdictFor(implied: number, model: ModelConstants = MODEL): FarmVerdict {
+  if (implied >= model.farm_ev_min) return 'farm';
+  if (implied >= model.thin_ev_min) return 'thin';
+  return 'skip';
 }
 
 /** Younger protocols need a longer hold before activity looks organic. */
@@ -107,7 +122,22 @@ function extraStep(kind: FarmKind, p: SnapshotProtocol, capital: number, chain: 
   };
 }
 
-export function farmPlan(p: SnapshotProtocol, age: number | null): FarmPlan {
+/** The closing step: the verdict, the dollar EV, and the band it landed in. */
+function verdictStep(verdict: FarmVerdict, implied: number, capital: number, model: ModelConstants): FarmStep {
+  const ev = fmtMoney(implied);
+  const farmBand = fmtMoney(model.farm_ev_min);
+  const thinBand = fmtMoney(model.thin_ev_min);
+  const text =
+    verdict === 'farm'
+      ? `Verdict FARM: expected value after token odds is ${ev}, at or above the ${farmBand} farm band, so run the full plan with the $${capital} deployed.`
+      : verdict === 'thin'
+        ? `Verdict THIN: expected value after token odds is ${ev}, between the ${thinBand} thin band and the ${farmBand} farm band, so deploy only the $${capital} minimum and keep upkeep light.`
+        : `Verdict SKIP: expected value after token odds is ${ev}, under the ${thinBand} thin band, so watch it and do not deploy the $${capital} yet.`;
+  return { text, cost: `$${capital} of capital at risk, no extra fee to decide`, time: '2 minutes to decide' };
+}
+
+/** `implied` is the row's expected value after token odds (implied_value_usd). */
+export function farmPlan(p: SnapshotProtocol, age: number | null, implied: number, model: ModelConstants = MODEL): FarmPlan {
   const chain = chainOf(p);
   const capital = capitalFor(p);
   const hold = holdDaysFor(age);
@@ -145,8 +175,12 @@ export function farmPlan(p: SnapshotProtocol, age: number | null): FarmPlan {
     },
   ];
   const kind = farmKind(p);
-  if (kind === null) return { steps, extra: null, kind };
-  const extra = steps.length - 1; // just before the notebook step
-  steps.splice(extra, 0, extraStep(kind, p, capital, chain));
-  return { steps, extra, kind };
+  let extra: number | null = null;
+  if (kind !== null) {
+    extra = steps.length - 1; // just before the notebook step
+    steps.splice(extra, 0, extraStep(kind, p, capital, chain));
+  }
+  const verdict = verdictFor(implied, model);
+  steps.push(verdictStep(verdict, implied, capital, model));
+  return { steps, extra, kind, verdict, capital };
 }

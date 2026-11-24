@@ -1,11 +1,11 @@
-// Launch Radar rationales (radar-2.5): a scored board row in plain English, from its multipliers only.
+// Launch Radar rationales (radar-3.0): a scored board row in plain English, from its multipliers only.
 //
 // Every function here is pure (same row in, same text out), takes numbers already on the row, and never
 // recomputes the score: the multipliers come from lib/scoring.ts via the row's `model` block. Each factor
 // helper returns one short sentence, or null when that factor did nothing worth saying. rationale()
-// joins them and names the factor that moved the value most. No network, no clock, no randomness.
+// joins them: size-fit base, adjustments, token odds, the farm verdict. No network, no clock, no randomness.
 
-import { MODEL } from './scoring.ts';
+import { MODEL, fmtMoney } from './scoring.ts';
 
 /** The slice of a board row the explainers read; BoardRow satisfies it structurally. */
 export interface Explainable {
@@ -13,13 +13,20 @@ export interface Explainable {
   chains: string[];
   change_7d: number | null;
   age_days: number | null;
+  launch_value_usd: number;
+  implied_value_usd: number;
+  farm_verdict: 'farm' | 'thin' | 'skip';
+  farm_capital_usd: number;
   model: {
     category_multiple: number;
+    fit_kind: 'fit' | 'median' | 'fallback';
+    fit_peers: number;
     growth_multiplier: number;
     maturity_multiplier: number;
     chain_multiplier: number;
     concentration_multiplier: number;
     liquidity_spread_multiplier: number;
+    token_odds: number;
   };
 }
 
@@ -59,6 +66,14 @@ export function categoryFactor(category: string | null, multiple: number, fallba
   return `Live ${label} tokens trade at about ${times(multiple)} their TVL, which sets the base value.`;
 }
 
+/** The base value and how it was made: a size curve fitted on peers, a peer median, or the default. */
+export function sizeFitFactor(category: string | null, multiple: number, kind: 'fit' | 'median' | 'fallback', peers: number): string {
+  const label = category ?? 'its category';
+  if (kind === 'fit') return `Size-fit on ${peers} live ${label} peers puts a protocol of this TVL at ${times(multiple)} its TVL, the base value.`;
+  if (kind === 'median') return `Only ${peers} live ${label} peers, so TVL is valued at their median-based ${times(multiple)}, with no size curve.`;
+  return `Too few live-token peers in ${label} for any fit, so TVL is valued at the default ${times(multiple)}.`;
+}
+
 /** The seven-day TVL change and what it did to the value. */
 export function growthFactor(change7d: number | null, mult: number): string | null {
   if (change7d === null) return 'No seven-day TVL change on record, so growth is neutral.';
@@ -92,7 +107,22 @@ export function liquiditySpreadFactor(mult: number): string | null {
   return `Rising TVL signals deepening liquidity: ${shiftPct(mult)}${capped ? ' (the cap)' : ''}.`;
 }
 
-/** The factor that moved the value furthest from neutral, with its direction. Category is the base, so it is not a candidate. */
+/** How likely a token ever lists, from age alone, and what that does to the launch value. */
+export function oddsFactor(odds: number, ageDays: number | null): string {
+  const pct = `${Math.round(odds * 100)}%`;
+  const why = ageDays === null ? 'age is unknown' : `it has gone ${ageWords(ageDays)} without one`;
+  return `Odds of a token ever listing are ${pct} because ${why}; expected value is the launch value times those odds.`;
+}
+
+/** The farm verdict in words and dollars: which expected-value band the row sits in. */
+export function verdictFactor(verdict: 'farm' | 'thin' | 'skip', implied: number, capital: number): string {
+  const ev = fmtMoney(implied);
+  if (verdict === 'farm') return `Worth farming: expected value ${ev} is at or above the ${fmtMoney(MODEL.farm_ev_min)} farm band, for $${capital} deployed.`;
+  if (verdict === 'thin') return `A thin farm: expected value ${ev} is in the ${fmtMoney(MODEL.thin_ev_min)} to ${fmtMoney(MODEL.farm_ev_min)} band, so deploy only the $${capital} minimum.`;
+  return `Skip for now: expected value ${ev} is under the ${fmtMoney(MODEL.thin_ev_min)} thin band, not worth $${capital} yet.`;
+}
+
+/** The factor that moved the value furthest from neutral, with its direction. Category and odds are bases, not candidates. */
 export function leadingFactor(row: Explainable): string | null {
   const m = row.model;
   const candidates: Array<[string, number]> = [
@@ -108,17 +138,19 @@ export function leadingFactor(row: Explainable): string | null {
   return `Biggest adjustment: ${best[0]} (${shiftPct(best[1])}).`;
 }
 
-/** The whole rationale: the base value, each factor that did something, then the biggest adjustment. */
+/** The whole rationale: size-fit base, each factor that did something, the biggest adjustment, odds, verdict. */
 export function rationale(row: Explainable): string {
   const m = row.model;
   const parts = [
-    categoryFactor(row.category, m.category_multiple),
+    sizeFitFactor(row.category, m.category_multiple, m.fit_kind, m.fit_peers),
     growthFactor(row.change_7d, m.growth_multiplier),
     maturityFactor(row.age_days, m.maturity_multiplier),
     chainFactor(row.chains.length, m.chain_multiplier),
     concentrationFactor(m.concentration_multiplier),
     liquiditySpreadFactor(m.liquidity_spread_multiplier),
     leadingFactor(row),
+    oddsFactor(m.token_odds, row.age_days),
+    verdictFactor(row.farm_verdict, row.implied_value_usd, row.farm_capital_usd),
   ];
   return parts.filter((p): p is string => p !== null).join(' ');
 }
@@ -129,6 +161,7 @@ export interface Summarizable {
   change_7d: number | null;
   age_days: number | null;
   farm_kind: 'lend' | 'dex' | null;
+  farm_verdict: 'farm' | 'thin' | 'skip';
 }
 
 export interface BoardSummary {
@@ -137,16 +170,20 @@ export interface BoardSummary {
   lendDex: number;
   positiveGrowth: number;
   unknownAge: number;
+  farm: number;
+  thin: number;
+  skip: number;
 }
 
-/** Counts across a board: multi-chain rows (the model's own threshold), lend/dex rows, rows with TVL up over seven days, rows with no listing date. */
+/** Counts across a board: multi-chain rows, lend/dex rows, rows with TVL up over seven days, rows with no listing date, and the verdict mix. */
 export function summarizeBoard(rows: readonly Summarizable[]): BoardSummary {
-  const s: BoardSummary = { total: rows.length, multiChain: 0, lendDex: 0, positiveGrowth: 0, unknownAge: 0 };
+  const s: BoardSummary = { total: rows.length, multiChain: 0, lendDex: 0, positiveGrowth: 0, unknownAge: 0, farm: 0, thin: 0, skip: 0 };
   for (const r of rows) {
     if (r.chains.length >= MODEL.concentration_min_chains) s.multiChain++;
     if (r.farm_kind !== null) s.lendDex++;
     if (r.change_7d !== null && r.change_7d > 0) s.positiveGrowth++;
     if (r.age_days === null) s.unknownAge++;
+    s[r.farm_verdict]++;
   }
   return s;
 }

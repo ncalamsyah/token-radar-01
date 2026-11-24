@@ -1,7 +1,9 @@
 // token-radar-01 entry (Node 22, standard library only).
-// Model radar-2.5: Launch Radar, implied value from live-token category comps (mcap/TVL medians),
-// growth, maturity, chain breadth, a small concentration bonus for protocols on 3+ chains and a liquidity
-// spread bonus (up to +8%) for TVL still growing. Farm plans are 6 steps, 7 for lending and DEX protocols.
+// Model radar-3.0: Launch Radar. Per category, a size-aware multiple (least-squares line of mcap/TVL on
+// log10 TVL through live-token peers, tested leave-one-out and walk-forward), times growth, maturity, chain
+// breadth, a concentration bonus and a liquidity spread bonus gives a launch value; token odds (falling
+// with age without a token) turn it into an expected value, which ranks the board. Farm plans are 7 steps
+// (8 for lending and DEX) and end in a farm / thin / skip verdict set by absolute expected-value bands.
 //
 // Layout: lib/scoring.ts (the math), lib/farm.ts (farm plans), lib/model.ts (snapshot -> board and
 // data.js), lib/dossier.ts (dossier.json), dashboard/ (data.js, radar-view.js, app.js: a static page).
@@ -20,6 +22,7 @@ import { fileURLToPath } from 'node:url';
 import { buildDossier, PLAIN_NAME } from './lib/dossier.ts';
 import { summarizeBoard } from './lib/explain.ts';
 import { MODEL, MODEL_VERSION, boardIssue, buildRadar, dataScript, parseSnapshot } from './lib/model.ts';
+import { fmtMoney } from './lib/scoring.ts';
 
 const here = fileURLToPath(new URL('.', import.meta.url));
 
@@ -61,7 +64,7 @@ const inputFile = inputArg.endsWith('.json') ? inputArg : join(inputArg, 'snapsh
 if (!existsSync(inputFile)) fail(`no snapshot at ${inputFile}: pass --input <snapshot.json|directory> or mount the sealed /input`, 2);
 const out = arg('output', process.env.MAKEFUN_OUTPUT_DIR ?? '/output');
 
-// radar-2.5 scoring: one pass over the snapshot, then the gate check before anything is written.
+// radar-3.0 scoring: one pass over the snapshot, then the gate check before anything is written.
 const snapshot = parseSnapshot(readFileSync(inputFile, 'utf8'));
 const { board, radar } = buildRadar(snapshot);
 const issue = boardIssue(board, snapshot);
@@ -69,9 +72,15 @@ if (issue !== null) fail(`the model wrote a board the gate refuses: ${issue}`);
 const multiChain = board.filter((r) => r.chains.length >= MODEL.concentration_min_chains).length;
 const deepPlans = board.filter((r) => r.farm_extra !== null).length;
 const mix = summarizeBoard(board);
+const fd = radar.fit_diagnostics;
+const ig = radar.integrity;
+const bands = radar.farm_verdict_thresholds;
 
 mkdirSync(out, { recursive: true });
-writeFileSync(join(out, 'board.json'), `${JSON.stringify({ rows: board })}\n`);
+writeFileSync(
+  join(out, 'board.json'),
+  `${JSON.stringify({ model_version: MODEL_VERSION, fit_diagnostics: fd, farm_verdict_thresholds: bands, integrity: ig, rows: board })}\n`,
+);
 writeFileSync(join(out, 'data.js'), dataScript(radar));
 
 const dashFiles = copyFiles(join(here, 'dashboard'), join(out, 'dashboard'));
@@ -88,7 +97,10 @@ writeFileSync(join(out, 'dossier.json'), buildDossier(out, { text_max_bytes: TEX
 
 process.stdout.write(
   `token radar (${MODEL_VERSION}): ${snapshot.protocols.length} protocols, ${snapshot.watchlist.length} on the watchlist, ${board.length} rows scored (${radar.early_size} early, ${radar.live_size} live set aside)\n` +
-    `token radar: ${multiChain} of ${board.length} board rows are multi-chain (>=${MODEL.concentration_min_chains} chains), ${deepPlans} lend/dex rows carry a 7-step farm plan\n` +
+    `token radar: watchlist fully covered: ${ig.watchlist_covered} of ${ig.watchlist_size}; ${ig.pre_token_count} pre-token + ${ig.live_count} live + ${ig.other_count} other = ${ig.protocols_total} protocols accounted\n` +
+    `token radar: size-fit on ${fd.peers_fitted} peers in ${fd.categories_fitted} categories; leave-one-out MALE ${fd.loo_male}, Spearman ${fd.loo_spearman}; walk-forward MALE ${fd.wf_male}, Spearman ${fd.wf_spearman}\n` +
+    `token radar: farm verdicts (farm >= ${fmtMoney(bands.farm_ev_min)} EV, thin >= ${fmtMoney(bands.thin_ev_min)}, else skip): ${mix.farm} farm, ${mix.thin} thin, ${mix.skip} skip (of ${mix.total})\n` +
+    `token radar: ${multiChain} of ${board.length} board rows are multi-chain (>=${MODEL.concentration_min_chains} chains), ${deepPlans} lend/dex rows carry an 8-step farm plan\n` +
     `token radar: board mix: ${mix.multiChain} multi-chain, ${mix.lendDex} lend/dex, ${mix.positiveGrowth} with TVL up over 7d, ${mix.unknownAge} of unknown age (of ${mix.total})\n` +
     `token radar: wrote ${join(out, 'board.json')}, ${join(out, 'data.js')}, ${join(out, 'dashboard')} (${dashFiles.length} files), ${join(out, 'screenshots')} (${shots.length} images) and ${join(out, 'dossier.json')}\n`,
 );
