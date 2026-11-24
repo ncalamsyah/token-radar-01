@@ -1,4 +1,4 @@
-// Launch Radar dashboard (radar-2.2). Reads window.RADAR from ../data.js. No network.
+// Launch Radar dashboard (radar-2.3). Reads window.RADAR from ../data.js. No network.
 (function () {
   'use strict';
 
@@ -6,6 +6,7 @@
   if (!DATA) return;
   var app = document.getElementById('board');
   var state = { q: '', category: 'all', chain: 'all', tab: 'pre-token', sort: 'implied', dir: -1, selected: null };
+  var MULTI_CHAIN_MIN = 3;
 
   var usd = new Intl.NumberFormat('en-US', { style: 'currency', currency: 'USD', maximumFractionDigits: 0 });
   function fmtUsd(n) {
@@ -24,20 +25,31 @@
     if (days >= 365) return (days / 365).toFixed(1) + 'y';
     return Math.max(0, Math.round(days)) + 'd';
   }
+  function fmtMult(n) { return (Math.round(n * 1e4) / 1e4).toString(); }
   function clamp(n, lo, hi) { return Math.min(hi, Math.max(lo, n)); }
   function none(v) { return v === null || v === undefined; }
+  function chainCount(row) { return (row.chains || []).length; }
+  function isMultiChain(row) { return chainCount(row) >= MULTI_CHAIN_MIN; }
 
-  // Same arithmetic as lib/model.ts impliedValue (radar-2.2), including concentrationMult.
-  function impliedOf(row, model) {
-    var growth = clamp(none(row.change_7d) ? 0 : row.change_7d, model.growth_floor, model.growth_cap);
-    var growthMult = 1 + (growth / 100) * model.growth_weight;
-    var age = none(row.age_days) ? model.unknown_age_days : row.age_days;
-    var maturity = model.maturity_floor + (clamp(age, 0, model.maturity_days) / model.maturity_days) * model.maturity_range;
-    var cat = (DATA.category_multiples && row.category && DATA.category_multiples[row.category]) || model.fallback_multiple;
-    var n = (row.chains || []).length;
+  // Same arithmetic as scoreBreakdown in lib/model.ts (radar-2.3): every multiplier behind implied value.
+  function scoreBreakdownOf(row, model) {
+    var growthPct = clamp(none(row.change_7d) ? 0 : row.change_7d, model.growth_floor, model.growth_cap);
+    var growthMult = 1 + (growthPct / 100) * model.growth_weight;
+    var ageUsed = none(row.age_days) ? model.unknown_age_days : row.age_days;
+    var maturityMult = model.maturity_floor + (clamp(ageUsed, 0, model.maturity_days) / model.maturity_days) * model.maturity_range;
+    var categoryMult = (DATA.category_multiples && row.category && DATA.category_multiples[row.category]) || model.fallback_multiple;
+    var n = chainCount(row);
     var chainMult = 1 + Math.min(Math.max(n - 1, 0), model.chain_cap) * model.chain_weight;
     var concentrationMult = n >= model.concentration_min_chains ? 1 + model.concentration_bonus : 1;
-    return Math.max(1, Math.round(row.tvl_usd * cat * growthMult * maturity * chainMult * concentrationMult));
+    return {
+      chainCount: n, growthPct: growthPct, ageUsed: ageUsed, ageKnown: !none(row.age_days),
+      categoryMult: categoryMult, growthMult: growthMult, maturityMult: maturityMult,
+      chainMult: chainMult, concentrationMult: concentrationMult
+    };
+  }
+  function impliedOf(row, model) {
+    var b = scoreBreakdownOf(row, model);
+    return Math.max(1, Math.round(row.tvl_usd * b.categoryMult * b.growthMult * b.maturityMult * b.chainMult * b.concentrationMult));
   }
 
   function el(tag, attrs) {
@@ -60,7 +72,7 @@
     return node;
   }
 
-  // Farm plan: mirrors farmSteps in lib/model.ts (radar-2.2).
+  // Farm plan: mirrors farmSteps in lib/model.ts.
   function chainOf(p) { return p.chains && p.chains.length > 0 ? p.chains[0] : 'its main chain'; }
   function capitalFor(p) {
     if (p.tvl_usd >= 5e9) return 300;
@@ -154,6 +166,7 @@
       var av, bv;
       if (key === 'name') { av = a.name.toLowerCase(); bv = b.name.toLowerCase(); }
       else if (key === 'tvl') { av = a.tvl_usd; bv = b.tvl_usd; }
+      else if (key === 'chains') { av = chainCount(a); bv = chainCount(b); }
       else if (key === 'growth') { av = none(a.change_7d) ? -Infinity : a.change_7d; bv = none(b.change_7d) ? -Infinity : b.change_7d; }
       else if (key === 'age') { av = none(a.age_days) ? Infinity : a.age_days; bv = none(b.age_days) ? Infinity : b.age_days; }
       else { av = a.implied_value_usd; bv = b.implied_value_usd; }
@@ -175,15 +188,17 @@
   }
 
   function lede() {
+    var multi = DATA.rows.filter(isMultiChain).length;
     return el('section', { class: 'lede' },
       el('div', null,
         el('h1', { text: 'Pre-token protocols, ranked by what a launch could be worth' }),
-        el('p', { text: 'Watchlist floor: every protocol with ≥ $' + Math.round(DATA.floor_usd / 1e6) + 'M TVL and no token on record (' + DATA.watchlist_size + '). Early radar adds ' + DATA.early_size + ' smaller pre-token names. Implied value uses live-token category mcap/TVL comps × growth × age without a token × chain breadth × a 5% bonus for three or more chains. An estimate, not a price.' })
+        el('p', { text: 'Watchlist floor: every protocol with ≥ $' + Math.round(DATA.floor_usd / 1e6) + 'M TVL and no token on record (' + DATA.watchlist_size + '). Early radar adds ' + DATA.early_size + ' smaller pre-token names. Implied value uses live-token category mcap/TVL comps × growth × age without a token × chain breadth × a 5% concentration bonus for three or more chains. An estimate, not a price.' })
       ),
       el('div', { class: 'facts' },
         el('div', { class: 'fact' }, el('span', { text: 'Watchlist covered' }), el('b', { text: DATA.watchlist_size + ' / ' + DATA.watchlist_size })),
         el('div', { class: 'fact' }, el('span', { text: 'Pre-token rows' }), el('b', { text: String(DATA.board_size) })),
         el('div', { class: 'fact' }, el('span', { text: 'Early below floor' }), el('b', { text: String(DATA.early_size) })),
+        el('div', { class: 'fact' }, el('span', { text: 'Multi-chain rows (' + MULTI_CHAIN_MIN + '+)' }), el('b', { text: String(multi) })),
         el('div', { class: 'fact' }, el('span', { text: 'Live set aside' }), el('b', { text: String(DATA.live_size) }))
       )
     );
@@ -195,7 +210,7 @@
       values.map(function (v) { return el('option', { value: v, text: v, selected: v === current ? 'selected' : null }); })
     );
     select.addEventListener('change', function () { onChange(select.value); writeHash(); render(); });
-    return el('div', { class: 'field' }, el('label', { for: id, text: label }), select);
+    return el('div', { class: 'field' + (id === 'chain' ? ' chain-filter' : '') }, el('label', { for: id, text: label }), select);
   }
 
   function controls() {
@@ -230,6 +245,10 @@
     return (r.category || 'Other') + ' · ' + (r.chains && r.chains.length ? r.chains.slice(0, 2).join(', ') : 'unnamed chain');
   }
 
+  function multiChainBadge(r) {
+    return isMultiChain(r) ? el('span', { class: 'badge-multi', title: chainCount(r) + ' chains', text: 'multi-chain' }) : null;
+  }
+
   function boardTable() {
     var list = sortedRows(rows());
     if (list.length === 0) {
@@ -249,8 +268,9 @@
         onkeydown: function (e) { if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); openDetail(r.slug); } }
       },
         el('td', { class: 'num', text: String(r.rank) }),
-        el('td', null, el('div', { class: 'name' }, el('b', { text: r.name }), el('span', { class: 'sub', text: where(r) }))),
+        el('td', null, el('div', { class: 'name' }, el('b', null, r.name, multiChainBadge(r)), el('span', { class: 'sub', text: where(r) }))),
         el('td', { class: 'num', text: fmtUsd(r.tvl_usd) }),
+        el('td', { class: 'num', text: String(chainCount(r)) }),
         el('td', { class: 'num ' + (none(r.change_7d) ? '' : r.change_7d >= 0 ? 'pos' : 'neg'), text: fmtPct(r.change_7d) }),
         el('td', { class: 'num', text: fmtAge(r.age_days) }),
         el('td', null, el('div', { class: 'implied' },
@@ -269,6 +289,7 @@
             sortHeader('implied', 'Rank'),
             sortHeader('name', 'Protocol'),
             sortHeader('tvl', 'TVL'),
+            sortHeader('chains', 'Chains'),
             sortHeader('growth', '7d'),
             sortHeader('age', 'Age'),
             sortHeader('implied', 'Implied value'),
@@ -307,7 +328,7 @@
     var m = DATA.model;
     return el('section', { class: 'panel model' },
       el('h2', { text: 'How implied value is computed' }),
-      el('p', { class: 'sub', text: 'One function scores every pre-token row. Category multiples are medians of live-token mcap/TVL in the same DefiLlama category (clamped). No protocol name is special-cased.' }),
+      el('p', { class: 'sub', text: 'One function (scoreBreakdown) returns every multiplier and one more multiplies them with TVL. Category multiples are medians of live-token mcap/TVL in the same DefiLlama category (clamped). No protocol name is special-cased.' }),
       el('div', { class: 'formula' },
         'implied = round( tvl × catMultiple × (1 + clamp(Δ7d,' + m.growth_floor + ',' + m.growth_cap + ')/100 × ' + m.growth_weight + ') × (' + m.maturity_floor + ' + min(age,' + m.maturity_days + ')/' + m.maturity_days + ' × ' + m.maturity_range + ') × (1 + min(chains-1,' + m.chain_cap + ') × ' + m.chain_weight + ') × concentrationMult )'
       ),
@@ -325,10 +346,11 @@
     writeHash();
     dialog.textContent = '';
     var recomputed = impliedOf(row, DATA.model);
+    var b = scoreBreakdownOf(row, DATA.model);
     dialog.appendChild(el('div', { class: 'detail-head' },
       el('div', null,
         el('span', { class: 'brand-name', text: 'Rank ' + row.rank + ' of ' + DATA.board_size }),
-        el('h2', { id: 'detail-title', text: row.name }),
+        el('h2', { id: 'detail-title' }, row.name, multiChainBadge(row)),
         el('p', { class: 'sub', text: (row.category || 'Other') + ' on ' + (row.chains && row.chains.length ? row.chains.join(', ') : 'an unnamed chain') })
       ),
       el('button', { class: 'close', type: 'button', 'aria-label': 'Close details', text: 'Close', onclick: function () { dialog.close(); } })
@@ -337,13 +359,22 @@
       el('h3', { text: 'Implied value' }),
       el('div', { class: 'equation' },
         el('div', null, el('span', { text: 'TVL' }), el('b', { class: 'num', text: fmtUsd(row.tvl_usd) })),
-        el('div', null, el('span', { text: 'Seven-day growth' }), el('b', { class: 'num', text: fmtPct(row.change_7d) })),
-        el('div', null, el('span', { text: 'Age with no token' }), el('b', { class: 'num', text: fmtAge(row.age_days) })),
-        el('div', null, el('span', { text: 'Category multiple' }), el('b', { class: 'num', text: String(row.category_multiple) })),
-        el('div', null, el('span', { text: 'Growth × maturity × chains × concentration' }), el('b', { class: 'num', text: row.growth_multiplier + ' × ' + row.maturity_multiplier + ' × ' + row.chain_multiplier + ' × ' + row.concentration_multiplier })),
         el('div', null, el('span', { text: 'Implied value' }), el('b', { class: 'num', text: fmtUsd(row.implied_value_usd) }))
       ),
       el('p', { class: 'sub', text: 'Model ' + DATA.model_version + ' recomputes this row as ' + fmtUsd(recomputed) + (recomputed === row.implied_value_usd ? ', matching board.json.' : ', which differs from the board.') + ' Estimate only.' })
+    ));
+    dialog.appendChild(el('section', { class: 'detail-section' },
+      el('h3', { text: 'Score breakdown' }),
+      el('div', { class: 'equation' },
+        el('div', null, el('span', { text: 'Chains listed' }), el('b', { class: 'num', text: String(b.chainCount) })),
+        el('div', null, el('span', { text: 'Seven-day growth (clamped)' }), el('b', { class: 'num', text: fmtPct(b.growthPct) + (none(row.change_7d) ? ' (none on record)' : '') })),
+        el('div', null, el('span', { text: 'Age used by the model' }), el('b', { class: 'num', text: fmtAge(b.ageUsed) + (b.ageKnown ? '' : ' (unknown, default)') })),
+        el('div', null, el('span', { text: 'Category multiple' }), el('b', { class: 'num', text: fmtMult(b.categoryMult) })),
+        el('div', null, el('span', { text: 'Growth multiplier' }), el('b', { class: 'num', text: fmtMult(b.growthMult) })),
+        el('div', null, el('span', { text: 'Maturity multiplier' }), el('b', { class: 'num', text: fmtMult(b.maturityMult) })),
+        el('div', null, el('span', { text: 'Chain multiplier' }), el('b', { class: 'num', text: fmtMult(b.chainMult) })),
+        el('div', null, el('span', { text: 'Concentration multiplier' }), el('b', { class: 'num', text: fmtMult(b.concentrationMult) }))
+      )
     ));
     dialog.appendChild(el('section', { class: 'detail-section' },
       el('h3', { text: 'Farm plan' }),

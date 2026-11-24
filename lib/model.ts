@@ -1,4 +1,4 @@
-// Token radar model radar-2.2: implied value from snapshot figures only.
+// Token radar model radar-2.3: implied value from snapshot figures only.
 //
 //   catMultiple = median(mcap/tvl) of live-token peers in the same category (clamped), else FALLBACK
 //   growthMult  = 1 + clamp(change_7d, GROWTH_FLOOR, GROWTH_CAP) / 100 * GROWTH_WEIGHT        (weight 0.7)
@@ -8,9 +8,10 @@
 //   concentrationMult = 1 + CONCENTRATION_BONUS (0.05) when chains.length >= CONCENTRATION_MIN_CHAINS (3), else 1
 //   implied     = max(1, round(tvl_usd * catMultiple * growthMult * maturity * chainMult * concentrationMult))
 //
+// scoreBreakdown() returns every one of those multipliers; impliedValue() only multiplies them together.
 // Live-token protocols are never mixed into the ranked board; their mcap/tvl only sets category comps.
-// No protocol name is special-cased. radar-2.2 adds the concentration factor, raises growth weight to 0.7,
-// widens the early radar to 180 rows and shows 40 live comps.
+// No protocol name is special-cased. radar-2.3 exposes the breakdown as one function; the numbers are
+// the same as radar-2.2 (concentration factor, growth weight 0.7, 180 early rows, 40 live comps).
 
 export interface SnapshotProtocol {
   slug: string;
@@ -70,7 +71,7 @@ export const MODEL: ModelConstants = {
   base_multiple: 0.45,
 };
 
-export const MODEL_VERSION = 'radar-2.2';
+export const MODEL_VERSION = 'radar-2.3';
 export const EARLY_ROWS = 180;
 export const LIVE_ROWS = 40;
 
@@ -218,21 +219,24 @@ export function categoryMultiples(protocols: SnapshotProtocol[], model: ModelCon
   return out;
 }
 
-export function impliedValue(
+export interface ScoreBreakdown {
+  age: number | null;
+  chainCount: number;
+  growthPct: number;
+  growthMult: number;
+  maturityMult: number;
+  categoryMult: number;
+  chainMult: number;
+  concentrationMult: number;
+}
+
+/** Every multiplier that feeds implied value, unrounded. impliedValue() multiplies these with the TVL. */
+export function scoreBreakdown(
   protocol: SnapshotProtocol,
   asOf: string,
   model: ModelConstants,
   multiples: Record<string, number>,
-): {
-  implied: number;
-  growthPct: number;
-  growthMult: number;
-  maturityMult: number;
-  chainMult: number;
-  concentrationMult: number;
-  categoryMult: number;
-  age: number | null;
-} {
+): ScoreBreakdown {
   const age = ageDays(asOf, protocol.listed_at);
   const growthPct = clamp(finite(protocol.change_7d, 0), model.growth_floor, model.growth_cap);
   const growthMult = 1 + (growthPct / 100) * model.growth_weight;
@@ -240,14 +244,24 @@ export function impliedValue(
   const maturityMult =
     model.maturity_floor + (clamp(ageForModel, 0, model.maturity_days) / model.maturity_days) * model.maturity_range;
   const categoryMult = multiples[protocol.category ?? ''] ?? model.fallback_multiple;
-  const extraChains = Math.max(0, protocol.chains.length - 1);
-  const chainMult = 1 + Math.min(extraChains, model.chain_cap) * model.chain_weight;
-  const concentrationMult = protocol.chains.length >= model.concentration_min_chains ? 1 + model.concentration_bonus : 1;
+  const chainCount = protocol.chains.length;
+  const chainMult = 1 + Math.min(Math.max(0, chainCount - 1), model.chain_cap) * model.chain_weight;
+  const concentrationMult = chainCount >= model.concentration_min_chains ? 1 + model.concentration_bonus : 1;
+  return { age, chainCount, growthPct, growthMult, maturityMult, categoryMult, chainMult, concentrationMult };
+}
+
+export function impliedValue(
+  protocol: SnapshotProtocol,
+  asOf: string,
+  model: ModelConstants,
+  multiples: Record<string, number>,
+): ScoreBreakdown & { implied: number } {
+  const b = scoreBreakdown(protocol, asOf, model, multiples);
   const implied = Math.max(
     1,
-    Math.round(protocol.tvl_usd * categoryMult * growthMult * maturityMult * chainMult * concentrationMult),
+    Math.round(protocol.tvl_usd * b.categoryMult * b.growthMult * b.maturityMult * b.chainMult * b.concentrationMult),
   );
-  return { implied, growthPct, growthMult, maturityMult, chainMult, concentrationMult, categoryMult, age };
+  return { ...b, implied };
 }
 
 export function buildBoard(snapshot: Snapshot, model: ModelConstants = MODEL): BoardRow[] {
@@ -306,7 +320,7 @@ function chainOf(p: SnapshotProtocol): string {
   return p.chains.length > 0 ? p.chains[0]! : 'its main chain';
 }
 
-/** radar-2.2 capital tiers by TVL (USD to deploy). */
+/** Capital tiers by TVL (USD to deploy). */
 function capitalFor(p: SnapshotProtocol): number {
   if (p.tvl_usd >= 5_000_000_000) return 300;
   if (p.tvl_usd >= 1_000_000_000) return 200;

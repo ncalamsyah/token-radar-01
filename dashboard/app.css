@@ -1,4 +1,4 @@
-/* Launch Radar radar-2.2: cool steel, teal on slate. System fonts only; no network. */
+/* Launch Radar radar-2.3: cool steel, teal on slate. System fonts only; no network. */
 :root {
   --canvas: #cfd9e1;
   --surface: #f4f8fa;
@@ -98,6 +98,9 @@ a { color: var(--accent-deep); }
   border-radius: var(--radius-control); background: var(--surface); min-width: 170px;
 }
 .field input { min-width: 260px; }
+/* Chain filter: accent edge so the chain dropdown reads as the multi-chain control. */
+.chain-filter select { border-color: var(--accent); border-left-width: 4px; background: var(--accent-soft); }
+.chain-filter label { color: var(--accent-deep); }
 .tabs {
   display: flex; gap: var(--s1); padding: 3px; border: 1px solid var(--border);
   border-radius: var(--radius-control); background: var(--panel-alt);
@@ -138,6 +141,13 @@ tbody tr[data-selected="true"] { background: var(--accent-soft); box-shadow: ins
   letter-spacing: 0.06em; text-transform: uppercase; background: var(--panel-alt); color: var(--muted);
   border: 1px solid var(--border);
 }
+/* Shown next to a protocol name when it lists 3 or more chains. */
+.badge-multi {
+  display: inline-block; margin-left: var(--s2); padding: 1px 7px; vertical-align: middle;
+  border-radius: 999px; border: 1px solid var(--accent-deep); background: var(--accent-soft);
+  color: var(--accent-deep); font: 600 10px/1.5 var(--font-num); letter-spacing: 0.08em; text-transform: uppercase;
+  white-space: nowrap;
+}
 .empty { padding: var(--s6); text-align: center; display: grid; gap: var(--s3); justify-items: center; }
 .button {
   min-height: 36px; padding: 0 var(--s4); border-radius: var(--radius-control);
@@ -174,4 +184,5 @@ tbody tr[data-selected="true"] { background: var(--accent-soft); box-shadow: ins
   .lede, .equation { grid-template-columns: 1fr; }
   .field input { min-width: 0; width: 100%; }
   .count { margin-left: 0; }
+  .badge-multi { margin-left: var(--s1); }
 }
