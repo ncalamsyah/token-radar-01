@@ -1,14 +1,16 @@
-// Token radar model radar-2.1: implied value from snapshot figures only.
+// Token radar model radar-2.2: implied value from snapshot figures only.
 //
 //   catMultiple = median(mcap/tvl) of live-token peers in the same category (clamped), else FALLBACK
-//   growthMult  = 1 + clamp(change_7d, GROWTH_FLOOR, GROWTH_CAP) / 100 * GROWTH_WEIGHT
+//   growthMult  = 1 + clamp(change_7d, GROWTH_FLOOR, GROWTH_CAP) / 100 * GROWTH_WEIGHT        (weight 0.7)
 //   maturity    = MATURITY_FLOOR + min(age_days, MATURITY_DAYS) / MATURITY_DAYS * MATURITY_RANGE
 //                 (unknown age uses UNKNOWN_AGE_DAYS)
 //   chainMult   = 1 + min(chains - 1, CHAIN_CAP) * CHAIN_WEIGHT
-//   implied     = max(1, round(tvl_usd * catMultiple * growthMult * maturity * chainMult))
+//   concentrationMult = 1 + CONCENTRATION_BONUS (0.05) when chains.length >= CONCENTRATION_MIN_CHAINS (3), else 1
+//   implied     = max(1, round(tvl_usd * catMultiple * growthMult * maturity * chainMult * concentrationMult))
 //
 // Live-token protocols are never mixed into the ranked board; their mcap/tvl only sets category comps.
-// No protocol name is special-cased. radar-2.1 keeps this category-comp formula and shows 36 live comps.
+// No protocol name is special-cased. radar-2.2 adds the concentration factor, raises growth weight to 0.7,
+// widens the early radar to 180 rows and shows 40 live comps.
 
 export interface SnapshotProtocol {
   slug: string;
@@ -44,6 +46,8 @@ export interface ModelConstants {
   unknown_age_days: number;
   chain_weight: number;
   chain_cap: number;
+  concentration_bonus: number;
+  concentration_min_chains: number;
   // Kept for dashboard formula display parity with older fields.
   base_multiple: number;
 }
@@ -52,7 +56,7 @@ export const MODEL: ModelConstants = {
   fallback_multiple: 0.45,
   multiple_floor: 0.12,
   multiple_cap: 2.5,
-  growth_weight: 0.68,
+  growth_weight: 0.7,
   growth_floor: -50,
   growth_cap: 150,
   maturity_floor: 0.55,
@@ -61,12 +65,14 @@ export const MODEL: ModelConstants = {
   unknown_age_days: 270,
   chain_weight: 0.04,
   chain_cap: 6,
+  concentration_bonus: 0.05,
+  concentration_min_chains: 3,
   base_multiple: 0.45,
 };
 
-export const MODEL_VERSION = 'radar-2.1';
+export const MODEL_VERSION = 'radar-2.2';
 export const EARLY_ROWS = 180;
-export const LIVE_ROWS = 36;
+export const LIVE_ROWS = 40;
 
 export interface FarmStep {
   text: string;
@@ -96,6 +102,7 @@ export interface BoardRow {
     growth_multiplier: number;
     maturity_multiplier: number;
     chain_multiplier: number;
+    concentration_multiplier: number;
     age_days: number | null;
   };
   farm_steps: string[];
@@ -117,6 +124,7 @@ export interface RadarRow {
   maturity_multiplier: number;
   category_multiple: number;
   chain_multiplier: number;
+  concentration_multiplier: number;
 }
 
 export interface LiveRow {
@@ -158,6 +166,13 @@ function finite(value: unknown, fallback: number): number {
   return typeof value === 'number' && Number.isFinite(value) ? value : fallback;
 }
 
+function clamp(n: number, lo: number, hi: number): number {
+  return Math.min(hi, Math.max(lo, n));
+}
+
+const round4 = (n: number): number => Math.round(n * 1e4) / 1e4;
+const cmp = (a: string, b: string): number => (a < b ? -1 : a > b ? 1 : 0);
+
 export function ageDays(asOf: string, listedAt: string | null): number | null {
   if (listedAt === null) return null;
   const a = Date.parse(`${asOf}T00:00:00Z`);
@@ -181,7 +196,7 @@ function median(nums: number[]): number | null {
   return s.length % 2 === 1 ? s[mid]! : (s[mid - 1]! + s[mid]!) / 2;
 }
 
-/** Live-token mcap/tvl medians by category; CEX ignored. */
+/** Live-token mcap/tvl medians by category (at least two comps); CEX ignored. */
 export function categoryMultiples(protocols: SnapshotProtocol[], model: ModelConstants = MODEL): Record<string, number> {
   const buckets = new Map<string, number[]>();
   for (const p of protocols) {
@@ -203,12 +218,6 @@ export function categoryMultiples(protocols: SnapshotProtocol[], model: ModelCon
   return out;
 }
 
-function clamp(n: number, lo: number, hi: number): number {
-  return Math.min(hi, Math.max(lo, n));
-}
-
-const round4 = (n: number): number => Math.round(n * 1e4) / 1e4;
-
 export function impliedValue(
   protocol: SnapshotProtocol,
   asOf: string,
@@ -220,31 +229,29 @@ export function impliedValue(
   growthMult: number;
   maturityMult: number;
   chainMult: number;
+  concentrationMult: number;
   categoryMult: number;
   age: number | null;
 } {
   const age = ageDays(asOf, protocol.listed_at);
-  const rawGrowth = finite(protocol.change_7d, 0);
-  const growthPct = clamp(rawGrowth, model.growth_floor, model.growth_cap);
+  const growthPct = clamp(finite(protocol.change_7d, 0), model.growth_floor, model.growth_cap);
   const growthMult = 1 + (growthPct / 100) * model.growth_weight;
   const ageForModel = age ?? model.unknown_age_days;
   const maturityMult =
-    model.maturity_floor +
-    (Math.min(Math.max(ageForModel, 0), model.maturity_days) / model.maturity_days) * model.maturity_range;
-  const catKey = protocol.category ?? '';
-  const categoryMult = multiples[catKey] ?? model.fallback_multiple;
+    model.maturity_floor + (clamp(ageForModel, 0, model.maturity_days) / model.maturity_days) * model.maturity_range;
+  const categoryMult = multiples[protocol.category ?? ''] ?? model.fallback_multiple;
   const extraChains = Math.max(0, protocol.chains.length - 1);
   const chainMult = 1 + Math.min(extraChains, model.chain_cap) * model.chain_weight;
-  const implied = Math.max(1, Math.round(protocol.tvl_usd * categoryMult * growthMult * maturityMult * chainMult));
-  return { implied, growthPct, growthMult, maturityMult, chainMult, categoryMult, age };
-}
-
-function bySlug(protocols: SnapshotProtocol[]): Map<string, SnapshotProtocol> {
-  return new Map(protocols.map((p) => [p.slug, p]));
+  const concentrationMult = protocol.chains.length >= model.concentration_min_chains ? 1 + model.concentration_bonus : 1;
+  const implied = Math.max(
+    1,
+    Math.round(protocol.tvl_usd * categoryMult * growthMult * maturityMult * chainMult * concentrationMult),
+  );
+  return { implied, growthPct, growthMult, maturityMult, chainMult, concentrationMult, categoryMult, age };
 }
 
 export function buildBoard(snapshot: Snapshot, model: ModelConstants = MODEL): BoardRow[] {
-  const index = bySlug(snapshot.protocols);
+  const index = new Map(snapshot.protocols.map((p) => [p.slug, p]));
   const multiples = categoryMultiples(snapshot.protocols, model);
   const chosen = new Map<string, SnapshotProtocol>();
   for (const slug of snapshot.watchlist) {
@@ -253,15 +260,12 @@ export function buildBoard(snapshot: Snapshot, model: ModelConstants = MODEL): B
   }
   const early = snapshot.protocols
     .filter((p) => !chosen.has(p.slug) && isRankable(p) && p.tvl_usd < snapshot.floor_usd)
-    .sort((a, b) => b.tvl_usd - a.tvl_usd || (a.slug < b.slug ? -1 : a.slug > b.slug ? 1 : 0))
+    .sort((a, b) => b.tvl_usd - a.tvl_usd || cmp(a.slug, b.slug))
     .slice(0, EARLY_ROWS);
   for (const p of early) chosen.set(p.slug, p);
 
-  const scored = [...chosen.values()].map((p) => {
-    const v = impliedValue(p, snapshot.as_of, model, multiples);
-    return { p, ...v };
-  });
-  scored.sort((a, b) => b.implied - a.implied || (a.p.slug < b.p.slug ? -1 : a.p.slug > b.p.slug ? 1 : 0));
+  const scored = [...chosen.values()].map((p) => ({ p, ...impliedValue(p, snapshot.as_of, model, multiples) }));
+  scored.sort((a, b) => b.implied - a.implied || cmp(a.p.slug, b.p.slug));
   return scored.map((s, i) => ({
     rank: i + 1,
     slug: s.p.slug,
@@ -284,6 +288,7 @@ export function buildBoard(snapshot: Snapshot, model: ModelConstants = MODEL): B
       growth_multiplier: round4(s.growthMult),
       maturity_multiplier: round4(s.maturityMult),
       chain_multiplier: round4(s.chainMult),
+      concentration_multiplier: round4(s.concentrationMult),
       age_days: s.age,
     },
     farm_steps: farmSteps(s.p, s.age).map(stepText),
@@ -301,6 +306,7 @@ function chainOf(p: SnapshotProtocol): string {
   return p.chains.length > 0 ? p.chains[0]! : 'its main chain';
 }
 
+/** radar-2.2 capital tiers by TVL (USD to deploy). */
 function capitalFor(p: SnapshotProtocol): number {
   if (p.tvl_usd >= 5_000_000_000) return 300;
   if (p.tvl_usd >= 1_000_000_000) return 200;
@@ -309,58 +315,45 @@ function capitalFor(p: SnapshotProtocol): number {
   return 50;
 }
 
+/** Younger protocols need a longer hold before activity looks organic. */
 function holdDaysFor(age: number | null): number {
-  if (age === null) return 50;
-  if (age < 120) return 80;
+  if (age === null) return 60;
+  if (age < 120) return 90;
   if (age < 270) return 60;
   if (age < 540) return 45;
   return 30;
 }
 
+// Category keyword -> concrete first action. {cap}, {name}, {chain} are filled in per protocol.
+// The dashboard carries the same table; keep both in step.
+const ACTIONS: Array<[string[], string]> = [
+  [['lend', 'cdp', 'collateral'], 'Supply ${cap} of USDC as collateral on {name} ({chain}), borrow under 40% LTV, and leave both legs open.'],
+  [['dex', 'amm'], "Add ${cap} of balanced liquidity to {name}'s deepest pool on {chain} and leave the LP position open."],
+  [['yield', 'leveraged farm', 'aggregator'], "Deposit ${cap} into {name}'s primary vault on {chain} and keep the shares staked only if the vault itself scores points."],
+  [['curator', 'allocator', 'risk'], 'Deposit ${cap} into a {name}-curated vault on {chain} and keep the receipt tokens in the same wallet.'],
+  [['perp', 'derivative', 'basis'], 'Deposit ${cap} USDC margin on {name} ({chain}), open a tiny hedge under 2x, and keep funding paid.'],
+  [['prediction'], 'Fund ${cap} on {name}, place one market under 5% of bankroll, and hold until settlement or the farm window ends.'],
+  [['stable'], "Mint or deposit ${cap} of the stable asset through {name} on {chain} and hold it in the protocol's own wallet view."],
+  [['rwa'], "Mint ${cap} of {name}'s yield-bearing RWA receipt on {chain} and keep it unbridged for the hold window."],
+  [['insurance'], 'Buy ${cap} of cover from {name} on {chain} against a core DeFi risk and keep the policy active.'],
+  [['bridge'], 'Bridge ${cap} of USDC to {chain} through {name}, then spend at least half inside its own app so the route is not a pass-through.'],
+  [['staking', 'restak'], "Stake ${cap} of the chain's staking asset through {name} on {chain} and keep the liquid receipt in-wallet."],
+];
+const DEFAULT_ACTION = "Deposit ${cap} of USDC into {name}'s primary product on {chain} and leave the position open through the hold window.";
+
 function actionFor(p: SnapshotProtocol, capital: number, chain: string): string {
   const c = (p.category ?? '').toLowerCase();
-  const name = p.name;
-  if (c.includes('lend') || c.includes('cdp') || c.includes('collateral')) {
-    return `Supply $${capital} of USDC as collateral on ${name} (${chain}), borrow under 40% LTV, and leave both legs open.`;
-  }
-  if (c.includes('dex') || c.includes('amm')) {
-    return `Add $${capital} of balanced liquidity to ${name}'s deepest pool on ${chain} and leave the LP position open.`;
-  }
-  if (c.includes('yield') || c.includes('leveraged farm') || c.includes('aggregator')) {
-    return `Deposit $${capital} into ${name}'s primary vault on ${chain} and leave the shares unstaked only if the vault itself scores points.`;
-  }
-  if (c.includes('curator') || c.includes('allocator') || c.includes('risk')) {
-    return `Deposit $${capital} into a ${name}-curated vault on ${chain} and keep the receipt tokens in the same wallet.`;
-  }
-  if (c.includes('perp') || c.includes('derivative') || c.includes('basis')) {
-    return `Deposit $${capital} USDC margin on ${name} (${chain}), open a tiny hedge under 2x, and keep funding paid.`;
-  }
-  if (c.includes('prediction')) {
-    return `Fund $${capital} on ${name}, place one market under 5% of bankroll, and leave the position until settlement or the farm window ends.`;
-  }
-  if (c.includes('stable')) {
-    return `Mint or deposit $${capital} of the stable asset through ${name} on ${chain} and hold it in the protocol's own wallet view.`;
-  }
-  if (c.includes('rwa')) {
-    return `Mint $${capital} of ${name}'s yield-bearing RWA receipt on ${chain} and keep it unbridged for the hold window.`;
-  }
-  if (c.includes('insurance')) {
-    return `Buy $${capital} of cover from ${name} on ${chain} covering a core DeFi risk and keep the policy active.`;
-  }
-  if (c.includes('bridge')) {
-    return `Bridge $${capital} of USDC to ${chain} through ${name}, then spend at least half inside its own app so the route is not a pass-through.`;
-  }
-  if (c.includes('staking') || c.includes('restak')) {
-    return `Stake $${capital} of the chain's staking asset through ${name} on ${chain} and keep the liquid receipt in-wallet.`;
-  }
-  return `Deposit $${capital} of USDC into ${name}'s primary product on ${chain} and leave the position open through the hold window.`;
+  const hit = ACTIONS.find(([keys]) => keys.some((k) => c.includes(k)));
+  return (hit ? hit[1] : DEFAULT_ACTION)
+    .replace('${cap}', () => `$${capital}`)
+    .replace('{name}', () => p.name)
+    .replace('{chain}', () => chain);
 }
 
 export function farmSteps(p: SnapshotProtocol, age: number | null): FarmStep[] {
   const chain = chainOf(p);
   const capital = capitalFor(p);
   const hold = holdDaysFor(age);
-  const action = actionFor(p, capital, chain);
   const gasSetup = capital >= 150 ? 12 : capital >= 75 ? 7 : 4;
   return [
     {
@@ -369,7 +362,7 @@ export function farmSteps(p: SnapshotProtocol, age: number | null): FarmStep[] {
       time: '10 minutes',
     },
     {
-      text: action,
+      text: actionFor(p, capital, chain),
       cost: `$${capital} of capital plus about $${gasSetup} of gas`,
       time: '20 minutes to set up',
     },
@@ -429,14 +422,14 @@ export function radarRow(row: BoardRow): RadarRow {
     maturity_multiplier: row.model.maturity_multiplier,
     category_multiple: row.model.category_multiple,
     chain_multiplier: row.model.chain_multiplier,
+    concentration_multiplier: row.model.concentration_multiplier,
   };
 }
 
 export function buildRadar(snapshot: Snapshot, model: ModelConstants = MODEL): { board: BoardRow[]; radar: RadarData } {
   const board = buildBoard(snapshot, model);
   const live = liveRows(snapshot);
-  const multiples = categoryMultiples(snapshot.protocols, model);
-  const early = board.filter((r) => !snapshot.watchlist.includes(r.slug)).length;
+  const watch = new Set(snapshot.watchlist);
   const radar: RadarData = {
     as_of: snapshot.as_of,
     source: snapshot.source,
@@ -445,9 +438,9 @@ export function buildRadar(snapshot: Snapshot, model: ModelConstants = MODEL): {
     model_version: MODEL_VERSION,
     watchlist_size: snapshot.watchlist.length,
     board_size: board.length,
-    early_size: early,
+    early_size: board.filter((r) => !watch.has(r.slug)).length,
     live_size: live.length,
-    category_multiples: multiples,
+    category_multiples: categoryMultiples(snapshot.protocols, model),
     rows: board.map(radarRow),
     live,
   };
