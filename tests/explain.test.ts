@@ -1,7 +1,7 @@
 // Run: node --test tests/
 import assert from 'node:assert/strict';
 import { test } from 'node:test';
-import { categoryFactor, chainFactor, growthFactor, leadingFactor, liquiditySpreadFactor, maturityFactor, rationale, shiftPct } from '../lib/explain.ts';
+import { categoryFactor, chainFactor, formatAgePhrase, formatPct, growthFactor, leadingFactor, liquiditySpreadFactor, maturityFactor, rationale, shiftPct, summarizeBoard } from '../lib/explain.ts';
 import type { Explainable } from '../lib/explain.ts';
 
 const row = (over: Partial<Explainable['model']> = {}, rest: Partial<Explainable> = {}): Explainable => ({
@@ -53,4 +53,20 @@ test('rationale is one deterministic, non-empty paragraph', () => {
   const r = rationale(row());
   assert.equal(r, rationale(row()));
   assert.ok(r.length > 80 && r.length < 600 && !r.includes('null') && !r.includes('undefined'));
+});
+
+test('formatPct and formatAgePhrase cover null, small and large inputs', () => {
+  assert.equal(formatPct(null), 'n/a');
+  assert.equal(formatPct(5.55, true), '+5.5%');
+  assert.equal(formatPct(-2), '-2.0%');
+  assert.equal(formatAgePhrase(null), 'of unknown age');
+  assert.equal(formatAgePhrase(10), 'under a month old');
+  assert.equal(formatAgePhrase(400), '13 months old');
+});
+
+test('summarizeBoard counts each bucket once per row', () => {
+  const r = (chains: number, change: number | null, age: number | null, kind: 'lend' | 'dex' | null) => ({ chains: Array(chains).fill('c'), change_7d: change, age_days: age, farm_kind: kind });
+  const s = summarizeBoard([r(3, 5, 100, 'lend'), r(1, -1, null, null), r(4, null, 50, 'dex'), r(2, 0, 9, null)]);
+  assert.deepEqual(s, { total: 4, multiChain: 2, lendDex: 2, positiveGrowth: 1, unknownAge: 1 });
+  assert.deepEqual(summarizeBoard([]), { total: 0, multiChain: 0, lendDex: 0, positiveGrowth: 0, unknownAge: 0 });
 });

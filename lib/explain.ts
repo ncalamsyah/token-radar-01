@@ -39,6 +39,19 @@ export function ageWords(days: number): string {
   return `${days} day${days === 1 ? '' : 's'}`;
 }
 
+/** A percentage with one decimal: "5.6%", or "+5.6%" when `signed` and positive. Null or non-finite is "n/a". */
+export function formatPct(n: number | null, signed = false): string {
+  if (n === null || !Number.isFinite(n)) return 'n/a';
+  return `${signed && n > 0 ? '+' : ''}${n.toFixed(1)}%`;
+}
+
+/** An age as an adjective phrase: "of unknown age", "under a month old", "18 months old". */
+export function formatAgePhrase(days: number | null): string {
+  if (days === null) return 'of unknown age';
+  if (days < 30) return 'under a month old';
+  return `${ageWords(days)} old`;
+}
+
 /** What the category's live-token comps say a dollar of TVL is worth. */
 export function categoryFactor(category: string | null, multiple: number, fallback: number = MODEL.fallback_multiple): string {
   const label = category ?? 'its category';
@@ -49,8 +62,8 @@ export function categoryFactor(category: string | null, multiple: number, fallba
 /** The seven-day TVL change and what it did to the value. */
 export function growthFactor(change7d: number | null, mult: number): string | null {
   if (change7d === null) return 'No seven-day TVL change on record, so growth is neutral.';
-  const size = `${Math.abs(change7d).toFixed(1)}%`;
-  if (Math.abs(mult - 1) < 0.005) return `TVL is flat over seven days (${change7d.toFixed(1)}%), so growth changes nothing.`;
+  const size = formatPct(Math.abs(change7d));
+  if (Math.abs(mult - 1) < 0.005) return `TVL is flat over seven days (${formatPct(change7d, true)}), so growth changes nothing.`;
   return mult > 1 ? `TVL grew ${size} over seven days, a ${shiftPct(mult)} lift.` : `TVL fell ${size} over seven days, a ${shiftPct(mult)} drag.`;
 }
 
@@ -58,7 +71,7 @@ export function growthFactor(change7d: number | null, mult: number): string | nu
 export function maturityFactor(ageDays: number | null, mult: number, unknownDays: number = MODEL.unknown_age_days): string {
   if (ageDays === null) return `Listing date unknown, so it is treated as ${ageWords(unknownDays)} old (${times(mult)}).`;
   const tone = mult < 1 ? 'a young-protocol discount' : mult > 1 ? 'a premium for staying tokenless this long' : 'neutral';
-  return `Listed ${ageWords(ageDays)} ago without a token: ${times(mult)}, ${tone}.`;
+  return `Tokenless and ${formatAgePhrase(ageDays)}: ${times(mult)}, ${tone}.`;
 }
 
 /** Chain breadth: more chains means a wider user base. */
@@ -108,4 +121,32 @@ export function rationale(row: Explainable): string {
     leadingFactor(row),
   ];
   return parts.filter((p): p is string => p !== null).join(' ');
+}
+
+/** The slice of a board row summarizeBoard counts; BoardRow satisfies it structurally. */
+export interface Summarizable {
+  chains: string[];
+  change_7d: number | null;
+  age_days: number | null;
+  farm_kind: 'lend' | 'dex' | null;
+}
+
+export interface BoardSummary {
+  total: number;
+  multiChain: number;
+  lendDex: number;
+  positiveGrowth: number;
+  unknownAge: number;
+}
+
+/** Counts across a board: multi-chain rows (the model's own threshold), lend/dex rows, rows with TVL up over seven days, rows with no listing date. */
+export function summarizeBoard(rows: readonly Summarizable[]): BoardSummary {
+  const s: BoardSummary = { total: rows.length, multiChain: 0, lendDex: 0, positiveGrowth: 0, unknownAge: 0 };
+  for (const r of rows) {
+    if (r.chains.length >= MODEL.concentration_min_chains) s.multiChain++;
+    if (r.farm_kind !== null) s.lendDex++;
+    if (r.change_7d !== null && r.change_7d > 0) s.positiveGrowth++;
+    if (r.age_days === null) s.unknownAge++;
+  }
+  return s;
 }

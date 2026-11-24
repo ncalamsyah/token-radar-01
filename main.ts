@@ -18,6 +18,7 @@ import { copyFileSync, existsSync, mkdirSync, readFileSync, readdirSync, statSyn
 import { join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { buildDossier, PLAIN_NAME } from './lib/dossier.ts';
+import { summarizeBoard } from './lib/explain.ts';
 import { MODEL, MODEL_VERSION, boardIssue, buildRadar, dataScript, parseSnapshot } from './lib/model.ts';
 
 const here = fileURLToPath(new URL('.', import.meta.url));
@@ -67,6 +68,7 @@ const issue = boardIssue(board, snapshot);
 if (issue !== null) fail(`the model wrote a board the gate refuses: ${issue}`);
 const multiChain = board.filter((r) => r.chains.length >= MODEL.concentration_min_chains).length;
 const deepPlans = board.filter((r) => r.farm_extra !== null).length;
+const mix = summarizeBoard(board);
 
 mkdirSync(out, { recursive: true });
 writeFileSync(join(out, 'board.json'), `${JSON.stringify({ rows: board })}\n`);
@@ -87,5 +89,6 @@ writeFileSync(join(out, 'dossier.json'), buildDossier(out, { text_max_bytes: TEX
 process.stdout.write(
   `token radar (${MODEL_VERSION}): ${snapshot.protocols.length} protocols, ${snapshot.watchlist.length} on the watchlist, ${board.length} rows scored (${radar.early_size} early, ${radar.live_size} live set aside)\n` +
     `token radar: ${multiChain} of ${board.length} board rows are multi-chain (>=${MODEL.concentration_min_chains} chains), ${deepPlans} lend/dex rows carry a 7-step farm plan\n` +
+    `token radar: board mix: ${mix.multiChain} multi-chain, ${mix.lendDex} lend/dex, ${mix.positiveGrowth} with TVL up over 7d, ${mix.unknownAge} of unknown age (of ${mix.total})\n` +
     `token radar: wrote ${join(out, 'board.json')}, ${join(out, 'data.js')}, ${join(out, 'dashboard')} (${dashFiles.length} files), ${join(out, 'screenshots')} (${shots.length} images) and ${join(out, 'dossier.json')}\n`,
 );
