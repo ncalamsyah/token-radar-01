@@ -64,11 +64,11 @@
     if (p.tvl_usd >= 1e9) return 200;
     if (p.tvl_usd >= 2.5e8) return 125;
     if (p.tvl_usd >= 5e7) return 75;
-    return 40;
+    return 50;
   }
   function holdDaysFor(age) {
-    if (age === null || age === undefined) return 45;
-    if (age < 120) return 75;
+    if (age === null || age === undefined) return 50;
+    if (age < 120) return 80;
     if (age < 270) return 60;
     if (age < 540) return 45;
     return 30;

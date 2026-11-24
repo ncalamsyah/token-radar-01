@@ -1,4 +1,5 @@
 // A working token-radar-01 entry (Node 22, standard library only).
+// Model radar-2.1: Launch Radar, implied value from live-token category comps (mcap/tvl medians).
 //
 // The program reads the sealed snapshot from /input/snapshot.json (or --input <file|dir>), scores every
 // pre-token protocol with the model in lib/model.ts, writes the ranked board to /output/board.json, and

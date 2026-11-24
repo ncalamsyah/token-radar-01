@@ -1,4 +1,4 @@
-// Token radar model radar-2: implied value from snapshot figures only.
+// Token radar model radar-2.1: implied value from snapshot figures only.
 //
 //   catMultiple = median(mcap/tvl) of live-token peers in the same category (clamped), else FALLBACK
 //   growthMult  = 1 + clamp(change_7d, GROWTH_FLOOR, GROWTH_CAP) / 100 * GROWTH_WEIGHT
@@ -8,7 +8,7 @@
 //   implied     = max(1, round(tvl_usd * catMultiple * growthMult * maturity * chainMult))
 //
 // Live-token protocols are never mixed into the ranked board; their mcap/tvl only sets category comps.
-// No protocol name is special-cased.
+// No protocol name is special-cased. radar-2.1 keeps this category-comp formula and shows 36 live comps.
 
 export interface SnapshotProtocol {
   slug: string;
@@ -52,7 +52,7 @@ export const MODEL: ModelConstants = {
   fallback_multiple: 0.45,
   multiple_floor: 0.12,
   multiple_cap: 2.5,
-  growth_weight: 0.65,
+  growth_weight: 0.68,
   growth_floor: -50,
   growth_cap: 150,
   maturity_floor: 0.55,
@@ -64,9 +64,9 @@ export const MODEL: ModelConstants = {
   base_multiple: 0.45,
 };
 
-export const MODEL_VERSION = 'radar-2';
+export const MODEL_VERSION = 'radar-2.1';
 export const EARLY_ROWS = 180;
-export const LIVE_ROWS = 32;
+export const LIVE_ROWS = 36;
 
 export interface FarmStep {
   text: string;
@@ -306,12 +306,12 @@ function capitalFor(p: SnapshotProtocol): number {
   if (p.tvl_usd >= 1_000_000_000) return 200;
   if (p.tvl_usd >= 250_000_000) return 125;
   if (p.tvl_usd >= 50_000_000) return 75;
-  return 40;
+  return 50;
 }
 
 function holdDaysFor(age: number | null): number {
-  if (age === null) return 45;
-  if (age < 120) return 75;
+  if (age === null) return 50;
+  if (age < 120) return 80;
   if (age < 270) return 60;
   if (age < 540) return 45;
   return 30;
