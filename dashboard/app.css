@@ -1,4 +1,4 @@
-/* Launch Radar radar-2.3: cool steel, teal on slate. System fonts only; no network. */
+/* Launch Radar radar-2.4: cool steel, teal on slate. System fonts only; no network. */
 :root {
   --canvas: #cfd9e1;
   --surface: #f4f8fa;
@@ -177,6 +177,18 @@ tbody tr[data-selected="true"] { background: var(--accent-soft); box-shadow: ins
 .steps { margin: 0; padding-left: 1.2em; display: grid; gap: var(--s3); }
 .steps li { display: grid; gap: 4px; }
 .steps .cost { color: var(--muted); font-size: 13px; }
+/* An odd last breakdown cell (the liquidity spread multiplier) spans the row instead of dangling. */
+.equation > div:last-child:nth-child(odd) { grid-column: 1 / -1; }
+/* The lend/DEX-only farm step: accent rail and a tag naming the upkeep it adds. */
+.steps li.step-extra {
+  padding: var(--s2) var(--s3); background: var(--accent-soft);
+  border-left: 3px solid var(--accent); border-radius: var(--radius-control);
+}
+.tag-extra {
+  justify-self: start; padding: 1px 7px; border-radius: 999px;
+  border: 1px solid var(--accent-deep); background: var(--surface); color: var(--accent-deep);
+  font: 600 10px/1.5 var(--font-num); letter-spacing: 0.08em; text-transform: uppercase;
+}
 
 @media (max-width: 860px) {
   .shell { padding: var(--s4); }
