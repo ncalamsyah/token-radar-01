@@ -1,8 +1,9 @@
-// Token radar model radar-2.4, the orchestrator: parse the snapshot, pick the rows, score them with
-// lib/scoring.ts, attach the farm plans from lib/farm.ts, and check the board against the gate.
+// Token radar model radar-2.5, the orchestrator: parse the snapshot, pick the rows, score them with
+// lib/scoring.ts, attach the farm plans (lib/farm.ts) and rationales (lib/explain.ts), and check the board against the gate.
 // The arithmetic lives in scoring.ts and the farm tables in farm.ts; nothing in this file multiplies or
 // words a step. Live-token protocols are never mixed into the ranked board (see scoring.ts).
 
+import { rationale } from './explain.ts';
 import { farmPlan, STEP_MAX_CHARS, STEP_MIN_CHARS, stepText } from './farm.ts';
 import type { FarmKind } from './farm.ts';
 import { MODEL, MODEL_VERSION, categoryMultiples, impliedValue, isPreToken, round4 } from './scoring.ts';
@@ -52,6 +53,8 @@ export interface BoardRow {
   /** Index in farm_steps of the lend/dex-only step, or null. */
   farm_extra: number | null;
   farm_kind: FarmKind | null;
+  /** Plain-English account of the multipliers (lib/explain.ts). */
+  rationale: string;
 }
 
 /** One row of data.js: what the dashboard needs, with the farm plan already worded. */
@@ -76,6 +79,7 @@ export interface RadarRow {
   farm_steps: string[];
   farm_extra: number | null;
   farm_kind: FarmKind | null;
+  rationale: string;
 }
 
 export interface LiveRow {
@@ -136,7 +140,7 @@ export function buildBoard(snapshot: Snapshot, model: ModelConstants = MODEL): B
   scored.sort((a, b) => b.implied - a.implied || cmp(a.p.slug, b.p.slug));
   return scored.map((s, i) => {
     const plan = farmPlan(s.p, s.age);
-    return {
+    const row = {
       rank: i + 1,
       slug: s.p.slug,
       name: s.p.name,
@@ -166,6 +170,7 @@ export function buildBoard(snapshot: Snapshot, model: ModelConstants = MODEL): B
       farm_extra: plan.extra,
       farm_kind: plan.kind,
     };
+    return { ...row, rationale: rationale(row) };
   });
 }
 
@@ -207,6 +212,7 @@ export function radarRow(row: BoardRow): RadarRow {
     farm_steps: row.farm_steps,
     farm_extra: row.farm_extra,
     farm_kind: row.farm_kind,
+    rationale: row.rationale,
   };
 }
 

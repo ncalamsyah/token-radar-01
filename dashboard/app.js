@@ -1,4 +1,4 @@
-// Launch Radar bootloader (radar-2.4): state, filters, URL hash and the page shell.
+// Launch Radar bootloader (radar-2.5): state, filters, URL hash and the page shell.
 // Needs window.RADAR (../data.js) and window.RadarView (radar-view.js), both loaded first. No network.
 (function () {
   'use strict';

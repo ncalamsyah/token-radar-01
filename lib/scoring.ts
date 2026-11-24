@@ -56,7 +56,7 @@ export interface ModelConstants {
   base_multiple: number;
 }
 
-export const MODEL_VERSION = 'radar-2.4';
+export const MODEL_VERSION = 'radar-2.5'; // same arithmetic as 2.4; 2.5 adds the rationale text
 
 export const MODEL: ModelConstants = {
   fallback_multiple: 0.45,

@@ -1,4 +1,4 @@
-// Launch Radar view helpers (radar-2.4): formatting, the board and live tables, the model panel and the
+// Launch Radar view helpers (radar-2.5): formatting, the board and live tables, the model panel and the
 // detail dialog. A classic script (no modules, no network): it publishes window.RadarView for app.js.
 // The score arithmetic below recomputes lib/scoring.ts from the constants in data.js, so the detail
 // dialog can show that its number matches board.json. A change to scoring.ts needs the same change here.
@@ -207,6 +207,10 @@
         el('div', null, el('span', { text: 'Implied value' }), el('b', { class: 'num', text: fmtUsd(row.implied_value_usd) }))
       ),
       el('p', { class: 'sub', text: 'Model ' + data.model_version + ' recomputes this row as ' + fmtUsd(recomputed) + (recomputed === row.implied_value_usd ? ', matching board.json.' : ', which differs from the board.') + ' Estimate only.' })
+    ));
+    dialog.appendChild(el('section', { class: 'detail-section' },
+      el('h3', { text: 'Why this value' }),
+      el('p', { class: 'rationale', text: row.rationale || 'No rationale on record for this row.' })
     ));
     dialog.appendChild(el('section', { class: 'detail-section' },
       el('h3', { text: 'Score breakdown' }),

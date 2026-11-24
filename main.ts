@@ -1,5 +1,5 @@
 // token-radar-01 entry (Node 22, standard library only).
-// Model radar-2.4: Launch Radar, implied value from live-token category comps (mcap/TVL medians),
+// Model radar-2.5: Launch Radar, implied value from live-token category comps (mcap/TVL medians),
 // growth, maturity, chain breadth, a small concentration bonus for protocols on 3+ chains and a liquidity
 // spread bonus (up to +8%) for TVL still growing. Farm plans are 6 steps, 7 for lending and DEX protocols.
 //
@@ -60,7 +60,7 @@ const inputFile = inputArg.endsWith('.json') ? inputArg : join(inputArg, 'snapsh
 if (!existsSync(inputFile)) fail(`no snapshot at ${inputFile}: pass --input <snapshot.json|directory> or mount the sealed /input`, 2);
 const out = arg('output', process.env.MAKEFUN_OUTPUT_DIR ?? '/output');
 
-// radar-2.4 scoring: one pass over the snapshot, then the gate check before anything is written.
+// radar-2.5 scoring: one pass over the snapshot, then the gate check before anything is written.
 const snapshot = parseSnapshot(readFileSync(inputFile, 'utf8'));
 const { board, radar } = buildRadar(snapshot);
 const issue = boardIssue(board, snapshot);
